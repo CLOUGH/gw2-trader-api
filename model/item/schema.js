@@ -3,9 +3,8 @@ const Schema = mongoose.Schema;
 
 
 const itemSchema = new Schema({
-  title: { type: String, required: true },
-  body: { type: String }
+  any: Schema.Types.Mixed
 });
 
 
-module.exports =  itemSchema;
+module.exports = itemSchema;

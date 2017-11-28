@@ -39,38 +39,60 @@ class ItemController extends Controller {
       });
 
 
-      const promise = Promise.map(idChunks, queue.wrap(idChunk =>
+      const promise = Promise.map([idChunks[0], idChunks[1]], queue.wrap(idChunk =>
         axios.get(`${this.gw2ApiUrl}/items?ids=${idChunk}`)
-          .then((itemResponse) => {
-            itemsDownloaded += itemResponse.data.length;
-            req.io.emit('/items/sync', {
-              message: `Downloaded ${itemsDownloaded} items of ${numberOfIds}`
-            });
+        .then((itemResponse) => {
+          itemsDownloaded += itemResponse.data.length;
+          req.io.emit('/items/sync', {
+            message: `Downloaded ${itemsDownloaded} items of ${numberOfIds}`
+          });
 
-            const items = itemResponse.data;
-            const tradingHistoryQueue = new TaskQueue(Promise, this.MAX_SIMULTANEOUS_DOWNLOADS);
-
-            return Promise.map(items, tradingHistoryQueue.wrap(item =>
-              axios.get(`${this.gw2Shinies}/history-daily/${item.id}`)
-                .then((historyResponse) => {
-                  item.history = historyResponse.data;
-                  return item;
-                })
-                .catch(err => next(err))
-            ));
-          })
-          .catch(err => next(err))
+          return itemResponse.data;
+        })
+        .catch(err => next(err))
       ));
 
 
-      promise.then((values) => {
-        console.log(values);
+      promise.then((itemCollection) => {
 
-        req.io.emit('/items/sync', {
-          message: 'Done'
+        const tradingHistoryQueue = new TaskQueue(Promise, 20);
+        let historyDownloaded = 0;
+
+        const items = _.flatten(itemCollection);
+
+        // console.log(items);
+        const tradingPromise = Promise.map(items, tradingHistoryQueue.wrap((item) => {
+          // return item;
+          return axios.get(`${this.gw2Shinies}/history/${item.id}`)
+            .then((historyResponse) => {
+              historyDownloaded += 1;
+              req.io.emit('/items/sync', {
+                message: `Downloaded ${historyDownloaded} item history`
+              });
+              item.history = historyResponse.data;
+              return item;
+            })
+            .catch(err => next(err));
+        }));
+
+        tradingPromise.then((items) => {
+          console.log(items[0]);
+
+          req.io.emit('/items/sync', {
+            message: 'Saving collection'
+          });
+          this.facade.model.collection.remove({}).then(() => {
+            this.facade.model.collection.insertMany(items)
+              .then((data) => {
+                req.io.emit('/items/sync', {
+                  message: 'Done'
+                });
+              });
+          });
         });
+
       }).catch(err => next(err));
-    });
+    }).catch(err => next(err));
 
     return res.json([]);
   }
