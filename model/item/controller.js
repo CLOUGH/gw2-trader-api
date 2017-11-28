@@ -39,7 +39,7 @@ class ItemController extends Controller {
       });
 
 
-      const promise = Promise.map([idChunks[0], idChunks[1]], queue.wrap(idChunk =>
+      const promise = Promise.map(idChunks, queue.wrap(idChunk =>
         axios.get(`${this.gw2ApiUrl}/items?ids=${idChunk}`)
         .then((itemResponse) => {
           itemsDownloaded += itemResponse.data.length;
