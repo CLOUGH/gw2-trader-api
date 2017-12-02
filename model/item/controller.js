@@ -14,6 +14,55 @@ class ItemController extends Controller {
     this.gw2Shinies = 'https://www.gw2shinies.com/api/json/';
     this.MAX_SIMULTANEOUS_DOWNLOADS = 100;
     this.itemsPerRequest = 200;
+
+    this.pageSize = 20;
+  }
+
+  find(req, res, next) {
+    const page = req.query.page || 1;
+    const pageSize = Number(req.query.limit) || this.pageSize;
+    const skips = pageSize * (page - 1);
+    const sort = req.query.sort || 'listings.roi';
+    const sortBy = {
+      'listings.roi': -1,
+    };
+    // sortBy[sort] = -1;
+
+    return this.facade.model.find({
+        'profit': {
+          $gt: 100
+        },
+        'roi': {
+          $lt: 50
+        },
+        'buy': {
+          $lt: 10000,
+
+        },
+        'demand': {
+          $gt: 10000
+        },
+        'supply': {
+          $gt: 5000
+        }
+      }, {
+        id: 1,
+        name: 1,
+        icon: 1,
+        buy: 1,
+        sell: 1,
+        profit: 1,
+        roi: 1,
+        demand: 1,
+        supply: 1,
+        rarity: 1,
+        level: 1
+      })
+      .skip(skips)
+      .limit(pageSize)
+      .sort(sortBy)
+      .then(collection => res.status(200).json(collection))
+      .catch(err => next(err));
   }
 
   syncItems(req, res, next) {
@@ -21,85 +70,123 @@ class ItemController extends Controller {
       message: 'Getting item ids'
     });
 
-    // get items
-    this.getItemIds(next).then((response) => {
-      const ids = response.data;
-      const numberOfIds = ids.length;
+    console.log('Getting item ids');
 
-      req.io.emit('/items/sync', {
-        message: `Got ${numberOfIds} items`
+    // get items
+    axios.get(`${this.gw2ApiUrl}/commerce/listings`).then((response) => {
+      const ids = response.data;
+      this.numberOfIds = ids.length;
+
+      this.io = req.io;
+
+      this.io.emit('/items/sync', {
+        message: `Got ${this.numberOfIds} items`
       });
 
+      console.log(`Got ${this.numberOfIds} items`);
+
+      this.downloaded = 0;
+      this.itemsUpdated = 0;
+
       const idChunks = ItemController.chunk(response.data, this.itemsPerRequest);
-      let itemsDownloaded = 0;
       const queue = new TaskQueue(Promise, this.MAX_SIMULTANEOUS_DOWNLOADS);
 
       req.io.emit('/items/sync', {
         message: 'Building urls'
       });
 
+      // Get the item details
+      Promise.map(idChunks, queue.wrap((idChunk) => {
+          const promises = [
+            this.getItems(idChunk),
+            this.getListings(idChunk)
+          ];
+          return Promise.all(promises).then((values) => {
+            values[0].forEach((item) => {
+              const listings = values[1].find(listing => listing.id === item.id);
+              delete listings.id;
 
-      const promise = Promise.map(idChunks, queue.wrap(idChunk =>
-        axios.get(`${this.gw2ApiUrl}/items?ids=${idChunk}`)
-        .then((itemResponse) => {
-          itemsDownloaded += itemResponse.data.length;
+              item.buy = listings.buys.length > 0 ? listings.buys[0].unit_price : 0;
+              item.sell = listings.sells.length > 0 ? listings.sells[0].unit_price : 0;
+              item.profit = (item.sell - item.sell * 0.15) - item.buy;
+
+              item.supply = listings.sells.length ? listings.sells.map(listing => listing.quantity).reduce((quantity, sell) => sell + quantity) : 0;
+              item.demand = listings.buys.length ? listings.buys.map(listing => listing.quantity).reduce((quantity, buy) => buy + quantity) : 0;
+              item.roi = item.sell > 0 ? item.profit / item.sell * 100 : 0;
+
+              item.listings = listings;
+            });
+            return this.saveItems(values[0]);
+          });
+        }))
+        .then((data) => {
           req.io.emit('/items/sync', {
-            message: `Downloaded ${itemsDownloaded} items of ${numberOfIds}`
+            message: 'Done'
           });
-
-          return itemResponse.data;
-        })
-        .catch(err => next(err))
-      ));
-
-
-      promise.then((itemCollection) => {
-
-        const tradingHistoryQueue = new TaskQueue(Promise, 20);
-        let historyDownloaded = 0;
-
-        const items = _.flatten(itemCollection);
-
-        // console.log(items);
-        const tradingPromise = Promise.map(items, tradingHistoryQueue.wrap((item) => {
-          // return item;
-          return axios.get(`${this.gw2Shinies}/history/${item.id}`)
-            .then((historyResponse) => {
-              historyDownloaded += 1;
-              req.io.emit('/items/sync', {
-                message: `Downloaded ${historyDownloaded} item history`
-              });
-              item.history = historyResponse.data;
-              return item;
-            })
-            .catch(err => next(err));
-        }));
-
-        tradingPromise.then((items) => {
-          console.log(items[0]);
-
-          req.io.emit('/items/sync', {
-            message: 'Saving collection'
-          });
-          this.facade.model.collection.remove({}).then(() => {
-            this.facade.model.collection.insertMany(items)
-              .then((data) => {
-                req.io.emit('/items/sync', {
-                  message: 'Done'
-                });
-              });
-          });
+          console.log('done');
         });
-
-      }).catch(err => next(err));
     }).catch(err => next(err));
+
+
+    // save exit after all the promises have been resolved
 
     return res.json([]);
   }
 
+  getListings(ids) {
+    return axios.get(`${this.gw2ApiUrl}/commerce/listings?ids=${ids}`)
+      .then((response) => {
+        console.log('got listings');
+        return response.data;
+      });
+  }
+
+
   getItemIds(next) {
     return axios.get(`${this.gw2ApiUrl}/items`)
       .catch(err => next(err));
+  }
+
+
+  getItems(itemIds) {
+    return axios.get(`${this.gw2ApiUrl}/items?ids=${itemIds}`)
+      .then((itemResponse) => {
+
+        this.downloaded += itemResponse.data.length;
+
+        this.io.emit('/items/sync', {
+          message: `Downloaded ${this.downloaded} items of ${this.numberOfIds}`
+        });
+        console.log('getting items');
+
+        return itemResponse.data;
+      });
+  }
+
+  saveItems(items) {
+    const bulks = [];
+    // creating the bulk write operations
+    items.forEach((item) => {
+      bulks.push({
+        updateOne: {
+          filter: {
+            id: item.id
+          },
+          update: item,
+          upsert: true
+        }
+      });
+    });
+
+    // save the data
+    return this.facade.model.collection.bulkWrite(bulks)
+      .then((data) => {
+        this.itemsUpdated += bulks.length;
+        console.log('saving items');
+        this.io.emit('/items/sync', {
+          message: `Updated ${this.itemsUpdated}`
+        });
+      });
   }
 
   static chunk(array, size) {
