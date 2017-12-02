@@ -28,24 +28,8 @@ class ItemController extends Controller {
     };
     // sortBy[sort] = -1;
 
-    return this.facade.model.find({
-        'profit': {
-          $gt: 100
-        },
-        'roi': {
-          $lt: 50
-        },
-        'buy': {
-          $lt: 10000,
-
-        },
-        'demand': {
-          $gt: 10000
-        },
-        'supply': {
-          $gt: 5000
-        }
-      }, {
+    return this.facade.model
+      .find({}, {
         id: 1,
         name: 1,
         icon: 1,
@@ -56,7 +40,9 @@ class ItemController extends Controller {
         demand: 1,
         supply: 1,
         rarity: 1,
-        level: 1
+        level: 1,
+        buc: 1,
+        suc: 1
       })
       .skip(skips)
       .limit(pageSize)
@@ -70,8 +56,6 @@ class ItemController extends Controller {
       message: 'Getting item ids'
     });
 
-    console.log('Getting item ids');
-
     // get items
     axios.get(`${this.gw2ApiUrl}/commerce/listings`).then((response) => {
       const ids = response.data;
@@ -80,10 +64,9 @@ class ItemController extends Controller {
       this.io = req.io;
 
       this.io.emit('/items/sync', {
-        message: `Got ${this.numberOfIds} items`
+        message: `Got ${this.numberOfIds} items`,
+        running: true
       });
-
-      console.log(`Got ${this.numberOfIds} items`);
 
       this.downloaded = 0;
       this.itemsUpdated = 0;
@@ -92,7 +75,8 @@ class ItemController extends Controller {
       const queue = new TaskQueue(Promise, this.MAX_SIMULTANEOUS_DOWNLOADS);
 
       req.io.emit('/items/sync', {
-        message: 'Building urls'
+        message: 'Building urls',
+        running: true
       });
 
       // Get the item details
@@ -114,6 +98,23 @@ class ItemController extends Controller {
               item.demand = listings.buys.length ? listings.buys.map(listing => listing.quantity).reduce((quantity, buy) => buy + quantity) : 0;
               item.roi = item.sell > 0 ? item.profit / item.sell * 100 : 0;
 
+              item.buc = 0;
+              item.suc = 0;
+
+              for (const buy of listings.buys) {
+                if (!this.profitable(buy.unit_price, item.sell)) {
+                  break;
+                }
+                item.buc += 1;
+              }
+
+              for (const sell of listings.sells) {
+                if (!this.profitable(item.buy, sell.unit_price)) {
+                  break;
+                }
+                item.suc += 1;
+              }
+
               item.listings = listings;
             });
             return this.saveItems(values[0]);
@@ -121,9 +122,9 @@ class ItemController extends Controller {
         }))
         .then((data) => {
           req.io.emit('/items/sync', {
-            message: 'Done'
+            message: 'Done',
+            running: false
           });
-          console.log('done');
         });
     }).catch(err => next(err));
 
@@ -133,14 +134,15 @@ class ItemController extends Controller {
     return res.json([]);
   }
 
+  profitable(buy, sell) {
+    return ((sell - sell * 0.15) - buy) > 0;
+  }
   getListings(ids) {
     return axios.get(`${this.gw2ApiUrl}/commerce/listings?ids=${ids}`)
       .then((response) => {
-        console.log('got listings');
         return response.data;
       });
   }
-
 
   getItemIds(next) {
     return axios.get(`${this.gw2ApiUrl}/items`)
@@ -155,9 +157,9 @@ class ItemController extends Controller {
         this.downloaded += itemResponse.data.length;
 
         this.io.emit('/items/sync', {
-          message: `Downloaded ${this.downloaded} items of ${this.numberOfIds}`
+          message: `Downloaded ${this.downloaded} items of ${this.numberOfIds}`,
+          running: true
         });
-        console.log('getting items');
 
         return itemResponse.data;
       });
@@ -182,9 +184,9 @@ class ItemController extends Controller {
     return this.facade.model.collection.bulkWrite(bulks)
       .then((data) => {
         this.itemsUpdated += bulks.length;
-        console.log('saving items');
         this.io.emit('/items/sync', {
-          message: `Updated ${this.itemsUpdated}`
+          message: `Updated ${this.itemsUpdated}`,
+          running: true
         });
       });
   }
