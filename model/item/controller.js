@@ -12,10 +12,30 @@ class ItemController extends Controller {
     this.gw2ApiUrl = 'https://api.guildwars2.com/v2';
     this.gw2Spidy = 'http://www.gw2spidy.com/api/v0.9/json';
     this.gw2Shinies = 'https://www.gw2shinies.com/api/json/';
-    this.MAX_SIMULTANEOUS_DOWNLOADS = 100;
+    this.MAX_SIMULTANEOUS_DOWNLOADS = 20;
     this.itemsPerRequest = 200;
+    this.itemUpdated = 0;
 
     this.pageSize = 20;
+  }
+
+  findById(req, res, next) {
+    return this.facade.findById(req.params.id)
+      .then((doc) => {
+        if (!doc) {
+          return res.sendStatus(404);
+        }
+        const data = doc.toObject();
+        return res.status(200).json(data);
+
+        // return axios.get(`${this.gw2Shinies}/history/${doc.toObject().id}`)
+        //   .then((response) => {
+        //     data.tradeHistories = response.data;
+        //   })
+        //   .catch(err => next(err));
+
+      })
+      .catch(err => next(err));
   }
 
   find(req, res, next) {
@@ -306,9 +326,12 @@ class ItemController extends Controller {
     return this.facade.model.collection.bulkWrite(bulks)
       .then((data) => {
         this.itemsUpdated += bulks.length;
+        console.log('item updated ' + this.itemsUpdated + ' of ' + this.numberOfIds);
         this.io.emit('/items/sync', {
           message: `Updated ${this.itemsUpdated}`,
-          running: true
+          running: true,
+          updated: this.itemsUpdated,
+          totalItems: this.numberOfIds
         });
       });
   }
